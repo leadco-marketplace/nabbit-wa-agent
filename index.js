@@ -153,6 +153,31 @@ async function connect() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // PAIRING-CODE LINKING (easier than scanning a QR from a log viewer).
+  // Set WA_PAIR_NUMBER to the dedicated number in international format, digits
+  // only (e.g. 15551234567). On first boot the bot prints an 8-char code; on
+  // the phone: WhatsApp → Settings → Linked Devices → Link a Device →
+  // "Link with phone number instead" → enter the code. Once linked, the
+  // session persists on the volume and this never runs again.
+  const pairNumber = (process.env.WA_PAIR_NUMBER || "").replace(/[^0-9]/g, "");
+  if (pairNumber && !sock.authState.creds.registered) {
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(pairNumber);
+        const pretty = code?.match(/.{1,4}/g)?.join("-") || code;
+        console.log(
+          `\n========================================\n` +
+            `  WHATSAPP PAIRING CODE:  ${pretty}\n` +
+            `  On the dedicated phone: WhatsApp → Settings → Linked Devices →\n` +
+            `  Link a Device → "Link with phone number instead" → enter the code.\n` +
+            `========================================\n`
+        );
+      } catch (e) {
+        log.warn(`pairing code request failed: ${e.message} (falling back to QR)`);
+      }
+    }, 3000);
+  }
+
   sock.ev.on("connection.update", async (u) => {
     const { connection, lastDisconnect, qr } = u;
     if (qr) {
