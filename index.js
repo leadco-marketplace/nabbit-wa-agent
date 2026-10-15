@@ -30,6 +30,7 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
+import fs from "node:fs";
 
 const BASE = (process.env.NABBIT_BASE || "https://www.nabbitmarketplace.com").replace(/\/+$/, "");
 const SECRET = process.env.WA_AGENT_SECRET || "";
@@ -39,6 +40,19 @@ const MAX_GAP = (parseInt(process.env.MAX_GAP_SEC || "95", 10) || 95) * 1000;
 const POLL = (parseInt(process.env.POLL_SEC || "20", 10) || 20) * 1000;
 const HOURS_START = parseInt(process.env.WA_HOURS_START || "9", 10);
 const HOURS_END = parseInt(process.env.WA_HOURS_END || "17", 10);
+const AUTH_DIR = process.env.AUTH_DIR || "./auth";
+
+// A 401 "loggedOut" means the stored session is invalid (e.g. left over from a
+// failed pairing attempt). Wiping it lets the next connect start clean and
+// request a fresh, working pairing code / QR.
+function wipeAuth() {
+  try {
+    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+    console.log("cleared stale auth — re-linking fresh");
+  } catch (e) {
+    console.warn(`could not clear auth dir: ${e.message}`);
+  }
+}
 
 if (!SECRET) {
   console.error("WA_AGENT_SECRET is required (must match the Nabbit env var). Exiting.");
@@ -141,7 +155,7 @@ async function pollLoop() {
 }
 
 async function connect() {
-  const { state, saveCreds } = await useMultiFileAuthState(process.env.AUTH_DIR || "./auth");
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
   sock = makeWASocket({
     version,
@@ -199,8 +213,11 @@ async function connect() {
       const code = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
       heartbeat({ online: false, qr_pending: false });
-      log.warn(`connection closed (${code}); ${loggedOut ? "logged out — delete ./auth and re-link" : "reconnecting"}`);
-      if (!loggedOut) setTimeout(connect, 3000);
+      log.warn(`connection closed (${code}); ${loggedOut ? "logged out — clearing stale session and re-linking" : "reconnecting"}`);
+      // Self-heal: a 401 logout usually means a poisoned/stale session on the
+      // volume. Wipe it and reconnect clean so a fresh pairing code works.
+      if (loggedOut) wipeAuth();
+      setTimeout(connect, 3000);
     }
   });
 
