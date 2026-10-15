@@ -1,0 +1,19 @@
+{
+  "name": "nabbit-wa-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Nabbit in-house WhatsApp sending agent (Baileys). Polls the Nabbit queue and sends paced WhatsApp messages from a dedicated number. Runs on an always-on VPS.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "pino": "^8.21.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
