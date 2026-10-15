@@ -26,6 +26,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  Browsers,
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
@@ -147,7 +148,9 @@ async function connect() {
     auth: state,
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
-    browser: ["Nabbit Agent", "Chrome", "1.0"],
+    // A STANDARD browser identity — a custom name makes pairing-code linking
+    // fail with "Couldn't link device". Ubuntu/Chrome is the reliable choice.
+    browser: Browsers.ubuntu("Chrome"),
     markOnlineOnConnect: false,
   });
 
