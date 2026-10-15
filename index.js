@@ -46,8 +46,14 @@ const AUTH_DIR = process.env.AUTH_DIR || "./auth";
 // failed pairing attempt). Wiping it lets the next connect start clean and
 // request a fresh, working pairing code / QR.
 function wipeAuth() {
+  // Delete the CONTENTS of AUTH_DIR, not the dir itself — on Railway the volume
+  // is mounted AT /app/auth, so removing the dir fails with EBUSY. Clearing the
+  // session files inside it is what actually re-links clean.
   try {
-    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+    for (const name of fs.readdirSync(AUTH_DIR)) {
+      fs.rmSync(`${AUTH_DIR}/${name}`, { recursive: true, force: true });
+    }
     console.log("cleared stale auth — re-linking fresh");
   } catch (e) {
     console.warn(`could not clear auth dir: ${e.message}`);
