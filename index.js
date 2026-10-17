@@ -114,6 +114,51 @@ function withinOutreachHours() {
   return h >= HOURS_START && h < HOURS_END;
 }
 
+// ── Inbound replies → the Nabbit concierge brain ─────────────────────────────
+// When someone REPLIES to this number, hand the text to Nabbit's full-knowledge
+// WhatsApp brain (same as the main line) and send back whatever it returns.
+const replying = new Set(); // per-sender in-flight guard (no double-answers)
+
+function textOf(message) {
+  if (!message) return "";
+  return (
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    message.imageMessage?.caption ||
+    message.videoMessage?.caption ||
+    ""
+  ).trim();
+}
+
+async function handleInbound(upsert) {
+  if (!upsert || upsert.type !== "notify") return;
+  for (const msg of upsert.messages || []) {
+    const jid = msg.key?.remoteJid || "";
+    // Only direct messages from other people (not our own sends, not groups/status).
+    if (msg.key?.fromMe) continue;
+    if (!jid.endsWith("@s.whatsapp.net")) continue;
+    const text = textOf(msg.message);
+    if (!text) continue;
+    if (replying.has(jid)) continue;
+
+    replying.add(jid);
+    try {
+      const from = jid.split("@")[0];
+      const name = msg.pushName || null;
+      const { reply } = await api("/api/wa-agent/reply", { method: "POST", body: { from, text, name } });
+      if (reply) {
+        await sleep(1200 + Math.floor(Math.random() * 1500)); // small human-like pause
+        await sock.sendMessage(jid, { text: reply });
+        log.info(`replied to ${from}`);
+      }
+    } catch (e) {
+      log.warn(`reply failed for ${jid}: ${e.message}`);
+    } finally {
+      replying.delete(jid);
+    }
+  }
+}
+
 async function sendJob(job) {
   // Cold-outreach DMs only go out in business hours; lead fan-out is real-time.
   if (job.kind === "outreach" && !withinOutreachHours()) return; // leave it pending for later
@@ -129,7 +174,12 @@ async function sendJob(job) {
   if (wait > 0) await sleep(wait);
 
   try {
-    await sock.sendMessage(jid, { text: job.message });
+    // With an image, send it as a photo with the text as the caption; else plain text.
+    if (job.mediaUrl) {
+      await sock.sendMessage(jid, { image: { url: job.mediaUrl }, caption: job.message });
+    } else {
+      await sock.sendMessage(jid, { text: job.message });
+    }
     lastSentAt = Date.now();
     await api("/api/wa-agent/report", { method: "POST", body: { jobId: job.id, status: "sent" } });
     log.info(`sent ${job.kind} → ${job.dest}`);
@@ -175,6 +225,9 @@ async function connect() {
   });
 
   sock.ev.on("creds.update", saveCreds);
+
+  // Someone replied to this number → answer with the Nabbit concierge brain.
+  sock.ev.on("messages.upsert", (u) => { handleInbound(u).catch((e) => log.warn(`inbound handler: ${e.message}`)); });
 
   // PAIRING-CODE LINKING (easier than scanning a QR from a log viewer).
   // Set WA_PAIR_NUMBER to the dedicated number in international format, digits
