@@ -89,14 +89,16 @@ async function api(path, { method = "GET", body } = {}) {
   return text ? JSON.parse(text) : {};
 }
 
+// Always tag our WORKER_ID so Nabbit keys this bot's row in the number pool
+// (one Railway service per number → one WORKER_ID each).
 const heartbeat = (patch) =>
-  api("/api/wa-agent/heartbeat", { method: "POST", body: patch }).catch((e) => log.warn(e.message));
+  api("/api/wa-agent/heartbeat", { method: "POST", body: { worker: WORKER_ID, ...patch } }).catch((e) => log.warn(e.message));
 
 async function syncGroups() {
   try {
     const all = await sock.groupFetchAllParticipating();
     const groups = Object.values(all || {}).map((g) => ({ jid: g.id, name: g.subject || "" }));
-    await api("/api/wa-agent/groups", { method: "POST", body: { number: myNumber(), groups } });
+    await api("/api/wa-agent/groups", { method: "POST", body: { worker: WORKER_ID, number: myNumber(), groups } });
     log.info(`synced ${groups.length} groups`);
   } catch (e) {
     log.warn(`group sync failed: ${e.message}`);
