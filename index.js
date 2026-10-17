@@ -131,25 +131,43 @@ function textOf(message) {
 }
 
 async function handleInbound(upsert) {
-  if (!upsert || upsert.type !== "notify") return;
+  if (!upsert || upsert.type !== "notify") {
+    if (upsert) log.info(`inbound: ignored upsert type=${upsert.type}`);
+    return;
+  }
   for (const msg of upsert.messages || []) {
     const jid = msg.key?.remoteJid || "";
     // Only direct messages from other people (not our own sends, not groups/status).
     if (msg.key?.fromMe) continue;
-    if (!jid.endsWith("@s.whatsapp.net")) continue;
+    if (!jid.endsWith("@s.whatsapp.net")) {
+      log.info(`inbound: skip non-DM jid=${jid}`);
+      continue;
+    }
+    const from = jid.split("@")[0];
     const text = textOf(msg.message);
-    if (!text) continue;
-    if (replying.has(jid)) continue;
+    const keys = Object.keys(msg.message || {}).join(",") || "(none)";
+    log.info(`inbound: from=${from} text="${text}" msgKeys=[${keys}]`);
+    if (!text) {
+      // Empty text usually = the message couldn't be decrypted yet (stale session).
+      log.warn(`inbound: NO readable text from ${from} (undecryptable?) — skipping`);
+      continue;
+    }
+    if (replying.has(jid)) {
+      log.info(`inbound: already replying to ${from} — skipping`);
+      continue;
+    }
 
     replying.add(jid);
     try {
-      const from = jid.split("@")[0];
       const name = msg.pushName || null;
-      const { reply } = await api("/api/wa-agent/reply", { method: "POST", body: { from, text, name } });
-      if (reply) {
+      const r = await api("/api/wa-agent/reply", { method: "POST", body: { from, text, name } });
+      log.info(`inbound: reply API returned ${JSON.stringify(r).slice(0, 160)}`);
+      if (r && r.reply) {
         await sleep(1200 + Math.floor(Math.random() * 1500)); // small human-like pause
-        await sock.sendMessage(jid, { text: reply });
+        await sock.sendMessage(jid, { text: r.reply });
         log.info(`replied to ${from}`);
+      } else {
+        log.warn(`inbound: reply API gave NO reply for ${from} (thread paused, or brain returned null)`);
       }
     } catch (e) {
       log.warn(`reply failed for ${jid}: ${e.message}`);
