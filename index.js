@@ -130,6 +130,20 @@ function textOf(message) {
   ).trim();
 }
 
+// WhatsApp's newer "LID" privacy addressing delivers messages with a
+// <id>@lid remoteJid instead of <phone>@s.whatsapp.net. The <id> is an opaque
+// LID, NOT the phone number — but Baileys includes the real phone number on the
+// key (e.g. senderPn / remoteJidAlt / participant). Scan the key for any
+// @s.whatsapp.net value and use its digits; fall back to the jid's own digits.
+function realPhoneFromKey(key, fallbackJid) {
+  try {
+    for (const v of Object.values(key || {})) {
+      if (typeof v === "string" && v.endsWith("@s.whatsapp.net")) return v.split("@")[0];
+    }
+  } catch {}
+  return (fallbackJid || "").split("@")[0];
+}
+
 async function handleInbound(upsert) {
   if (!upsert || upsert.type !== "notify") {
     if (upsert) log.info(`inbound: ignored upsert type=${upsert.type}`);
@@ -139,14 +153,15 @@ async function handleInbound(upsert) {
     const jid = msg.key?.remoteJid || "";
     // Only direct messages from other people (not our own sends, not groups/status).
     if (msg.key?.fromMe) continue;
-    if (!jid.endsWith("@s.whatsapp.net")) {
+    // Accept classic DMs (@s.whatsapp.net) AND the new privacy addressing (@lid).
+    if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@lid")) {
       log.info(`inbound: skip non-DM jid=${jid}`);
       continue;
     }
-    const from = jid.split("@")[0];
+    const from = realPhoneFromKey(msg.key, jid);
     const text = textOf(msg.message);
     const keys = Object.keys(msg.message || {}).join(",") || "(none)";
-    log.info(`inbound: from=${from} text="${text}" msgKeys=[${keys}]`);
+    log.info(`inbound: from=${from} jid=${jid} text="${text}" msgKeys=[${keys}]`);
     if (!text) {
       // Empty text usually = the message couldn't be decrypted yet (stale session).
       log.warn(`inbound: NO readable text from ${from} (undecryptable?) — skipping`);
