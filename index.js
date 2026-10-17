@@ -72,7 +72,6 @@ const jitter = () => MIN_GAP + Math.floor(Math.random() * Math.max(1, MAX_GAP - 
 let sock = null;
 let connected = false;
 let lastSentAt = 0;
-let keepAlive = null; // presence-ping interval; keeps the socket warm + last-seen fresh
 
 async function api(path, { method = "GET", body } = {}) {
   const res = await fetch(`${BASE}${path}`, {
@@ -259,11 +258,13 @@ async function connect() {
     // A STANDARD browser identity — a custom name makes pairing-code linking
     // fail with "Couldn't link device". Ubuntu/Chrome is the reliable choice.
     browser: Browsers.ubuntu("Chrome"),
-    // Appear ONLINE so WhatsApp "last seen" reflects the bot being live AND the
-    // session stays warm (a dead socket is detected far faster). Combined with
-    // the keepalive presence ping below, this is what fixes the "offline for an
-    // hour → message hangs for minutes" problem.
-    markOnlineOnConnect: true,
+    // Stay PASSIVE (do NOT broadcast "online") — a linked-device bot that keeps
+    // announcing presence looks bot-like and is a known way to get a cold number
+    // flagged/logged out. keepAliveIntervalMs is Baileys' own LOW-LEVEL WebSocket
+    // ping (not a visible presence broadcast): it keeps the socket warm and makes
+    // a dead connection reconnect in seconds, which is all we need to avoid the
+    // "offline for an hour → message hangs" problem. No manual presence pinging.
+    markOnlineOnConnect: false,
     keepAliveIntervalMs: 20000,
   });
 
@@ -309,22 +310,11 @@ async function connect() {
       log.info(`connected as ${myNumber()}`);
       heartbeat({ online: true, qr_pending: false, number: myNumber() });
       syncGroups();
-      // KEEPALIVE: ping presence every ~40s. This keeps "last seen" current, keeps
-      // the socket warm, and — crucially — if the ping THROWS, the connection is
-      // dead, so we force a reconnect immediately instead of hanging for minutes.
-      if (keepAlive) clearInterval(keepAlive);
-      keepAlive = setInterval(async () => {
-        try {
-          await sock.sendPresenceUpdate("available");
-        } catch (e) {
-          log.warn(`keepalive ping failed (${e.message}) — forcing reconnect`);
-          try { sock.end(new Error("keepalive dead")); } catch {}
-        }
-      }, 40000);
+      // No manual presence keepalive — Baileys' keepAliveIntervalMs (set on the
+      // socket) already pings at the WebSocket level and reconnects a dead socket.
     }
     if (connection === "close") {
       connected = false;
-      if (keepAlive) { clearInterval(keepAlive); keepAlive = null; }
       const code = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
       heartbeat({ online: false, qr_pending: false });
