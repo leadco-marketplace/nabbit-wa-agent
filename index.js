@@ -72,6 +72,8 @@ const jitter = () => MIN_GAP + Math.floor(Math.random() * Math.max(1, MAX_GAP - 
 let sock = null;
 let connected = false;
 let lastSentAt = 0;
+let reconnectTimer = null; // single pending reconnect (no stacking)
+let groupTimer = null;     // periodic group resync handle (cleared on reconnect)
 
 async function api(path, { method = "GET", body } = {}) {
   const res = await fetch(`${BASE}${path}`, {
@@ -281,7 +283,12 @@ async function connect() {
   // session persists on the volume and this never runs again.
   const pairNumber = (process.env.WA_PAIR_NUMBER || "").replace(/[^0-9]/g, "");
   if (pairNumber && !sock.authState.creds.registered) {
+    const thisSock = sock; // only request on THIS socket, never a replaced one
     setTimeout(async () => {
+      // If we've already reconnected to a newer socket, do NOT request another
+      // code — every extra request invalidates the last one AND spams WhatsApp's
+      // pairing endpoint (rate-limit → "Connection Closed" loop).
+      if (sock !== thisSock) return;
       try {
         const code = await sock.requestPairingCode(pairNumber);
         const pretty = code?.match(/.{1,4}/g)?.join("-") || code;
@@ -315,20 +322,30 @@ async function connect() {
     }
     if (connection === "close") {
       connected = false;
+      if (groupTimer) { clearInterval(groupTimer); groupTimer = null; }
       const code = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
+      const registered = !!sock?.authState?.creds?.registered;
       heartbeat({ online: false, qr_pending: false });
-      log.warn(`connection closed (${code}); ${loggedOut ? "logged out — clearing stale session and re-linking" : "reconnecting"}`);
+      log.warn(`connection closed (${code}); registered=${registered}; ${loggedOut ? "logged out — clearing stale session" : "reconnecting"}`);
       // Self-heal: a 401 logout usually means a poisoned/stale session on the
       // volume. Wipe it and reconnect clean so a fresh pairing code works.
       if (loggedOut) wipeAuth();
-      // Reconnect FAST (1s) so a dropped socket is back in seconds, not minutes.
-      setTimeout(connect, 1000);
+      // ⚑ RECONNECT DELAY: when ALREADY LINKED, reconnect fast (1s) so a dropped
+      // socket is back in seconds. When NOT yet registered (initial pairing), back
+      // off HARD (30s) — otherwise every reconnect requests a fresh pairing code,
+      // which invalidates the previous one AND hammers WhatsApp's pairing endpoint
+      // into rate-limiting the number ("Connection Closed"). A slow pairing cadence
+      // gives you a stable ~30s window per code and stops the rate-limit spiral.
+      const delay = registered ? 1000 : 30000;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, delay);
     }
   });
 
   // Periodic group resync (groups change over time).
-  setInterval(() => connected && syncGroups(), 1000 * 60 * 30);
+  if (groupTimer) clearInterval(groupTimer);
+  groupTimer = setInterval(() => connected && syncGroups(), 1000 * 60 * 30);
 }
 
 connect().then(pollLoop);
