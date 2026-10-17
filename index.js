@@ -72,6 +72,7 @@ const jitter = () => MIN_GAP + Math.floor(Math.random() * Math.max(1, MAX_GAP - 
 let sock = null;
 let connected = false;
 let lastSentAt = 0;
+let keepAlive = null; // presence-ping interval; keeps the socket warm + last-seen fresh
 
 async function api(path, { method = "GET", body } = {}) {
   const res = await fetch(`${BASE}${path}`, {
@@ -173,12 +174,15 @@ async function handleInbound(upsert) {
     }
 
     replying.add(jid);
+    // Show activity INSTANTLY so it feels fast: mark read + "typing…".
+    sock.readMessages([msg.key]).catch(() => {});
+    sock.sendPresenceUpdate("composing", jid).catch(() => {});
     try {
       const name = msg.pushName || null;
       const r = await api("/api/wa-agent/reply", { method: "POST", body: { from, text, name } });
       log.info(`inbound: reply API returned ${JSON.stringify(r).slice(0, 160)}`);
       if (r && r.reply) {
-        await sleep(1200 + Math.floor(Math.random() * 1500)); // small human-like pause
+        await sleep(350); // brief human-like pause (keep it snappy)
         await sock.sendMessage(jid, { text: r.reply });
         log.info(`replied to ${from}`);
       } else {
@@ -187,6 +191,7 @@ async function handleInbound(upsert) {
     } catch (e) {
       log.warn(`reply failed for ${jid}: ${e.message}`);
     } finally {
+      sock.sendPresenceUpdate("paused", jid).catch(() => {});
       replying.delete(jid);
     }
   }
@@ -254,7 +259,12 @@ async function connect() {
     // A STANDARD browser identity — a custom name makes pairing-code linking
     // fail with "Couldn't link device". Ubuntu/Chrome is the reliable choice.
     browser: Browsers.ubuntu("Chrome"),
-    markOnlineOnConnect: false,
+    // Appear ONLINE so WhatsApp "last seen" reflects the bot being live AND the
+    // session stays warm (a dead socket is detected far faster). Combined with
+    // the keepalive presence ping below, this is what fixes the "offline for an
+    // hour → message hangs for minutes" problem.
+    markOnlineOnConnect: true,
+    keepAliveIntervalMs: 20000,
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -299,9 +309,22 @@ async function connect() {
       log.info(`connected as ${myNumber()}`);
       heartbeat({ online: true, qr_pending: false, number: myNumber() });
       syncGroups();
+      // KEEPALIVE: ping presence every ~40s. This keeps "last seen" current, keeps
+      // the socket warm, and — crucially — if the ping THROWS, the connection is
+      // dead, so we force a reconnect immediately instead of hanging for minutes.
+      if (keepAlive) clearInterval(keepAlive);
+      keepAlive = setInterval(async () => {
+        try {
+          await sock.sendPresenceUpdate("available");
+        } catch (e) {
+          log.warn(`keepalive ping failed (${e.message}) — forcing reconnect`);
+          try { sock.end(new Error("keepalive dead")); } catch {}
+        }
+      }, 40000);
     }
     if (connection === "close") {
       connected = false;
+      if (keepAlive) { clearInterval(keepAlive); keepAlive = null; }
       const code = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
       heartbeat({ online: false, qr_pending: false });
@@ -309,7 +332,8 @@ async function connect() {
       // Self-heal: a 401 logout usually means a poisoned/stale session on the
       // volume. Wipe it and reconnect clean so a fresh pairing code works.
       if (loggedOut) wipeAuth();
-      setTimeout(connect, 3000);
+      // Reconnect FAST (1s) so a dropped socket is back in seconds, not minutes.
+      setTimeout(connect, 1000);
     }
   });
 
